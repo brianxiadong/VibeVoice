@@ -234,10 +234,12 @@ class NewsPodcastGenerator:
         try:
             # Get current date for folder organization
             current_date = datetime.now().strftime("%Y-%m-%d")
+            year_month = datetime.now().strftime("%Y-%m")
             
-            # Define target directory
+            # Define target directory with two-level structure: year-month/year-month-day
             target_base_dir = Path("/root/news/english-news-daily")
-            target_date_dir = target_base_dir / current_date
+            target_month_dir = target_base_dir / year_month
+            target_date_dir = target_month_dir / current_date
             
             # Create target directory if it doesn't exist
             target_date_dir.mkdir(parents=True, exist_ok=True)
