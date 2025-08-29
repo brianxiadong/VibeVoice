@@ -172,6 +172,21 @@ class NewsPodcastGenerator:
                 results['files']['dialogue'] = str(dialogue_file)
                 logger.info(f"Dialogue saved to: {dialogue_file}")
             
+            # Step 2.5: Generate Chinese translation
+            logger.info("Generating Chinese translation...")
+            chinese_dialogue = self.ollama_processor.translate_to_chinese(dialogue)
+            
+            if chinese_dialogue:
+                # Save Chinese dialogue if requested
+                if save_intermediate:
+                    chinese_dialogue_file = output_path / f"{base_filename}_dialogue_chinese.txt"
+                    with open(chinese_dialogue_file, 'w', encoding='utf-8') as f:
+                        f.write(chinese_dialogue)
+                    results['files']['chinese_dialogue'] = str(chinese_dialogue_file)
+                    logger.info(f"Chinese dialogue saved to: {chinese_dialogue_file}")
+            else:
+                logger.warning("Failed to generate Chinese translation")
+            
             # Step 3: Generate audio
             audio_file = output_path / f"{base_filename}.wav"
             audio_success = self.generate_audio(dialogue, str(audio_file), voice_preferences)

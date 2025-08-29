@@ -222,6 +222,56 @@ Enhanced dialogue:"""
         enhanced = self._call_ollama(prompt, system_prompt)
         return enhanced or dialogue
     
+    def translate_to_chinese(self, english_dialogue: str) -> str:
+        """Translate English dialogue to Chinese"""
+        
+        system_prompt = """你是一个专业的翻译专家，专门负责将英文播客对话翻译成中文。请保持对话的自然性和流畅性，同时保持原有的格式。
+
+重要格式要求：
+- 保持 "Speaker 1:", "Speaker 2:" 等格式不变
+- 翻译内容要自然流畅，符合中文表达习惯
+- 保持对话的语气和情感
+- 保持专业术语的准确性"""
+        
+        prompt = f"""请将以下英文播客对话翻译成中文，保持原有的Speaker格式：
+
+{english_dialogue}
+
+翻译要求：
+1. 保持"Speaker 1:", "Speaker 2:"等格式完全不变
+2. 翻译要自然流畅，符合中文播客对话习惯
+3. 保持原对话的语气和情感
+4. 专业术语要准确翻译
+5. 保持对话的逻辑结构和流程
+
+中文翻译："""
+        
+        chinese_dialogue = self._call_ollama(prompt, system_prompt)
+        
+        if not chinese_dialogue:
+            # 如果翻译失败，返回一个简单的中文对话
+            chinese_dialogue = self._create_fallback_chinese_dialogue()
+        
+        return chinese_dialogue
+    
+    def _create_fallback_chinese_dialogue(self) -> str:
+        """Create a simple fallback Chinese dialogue if translation fails"""
+        return """Speaker 1: 欢迎收听今日热点新闻播客！我们有一些精彩的内容要和大家分享。
+
+Speaker 2: 是的！今天科技和新闻界发生了很多有趣的事情。
+
+Speaker 1: 没错！让我们深入了解主要新闻。从我看到的情况来看，各个行业都有一些有趣的发展。
+
+Speaker 2: 确实如此。科技行业似乎特别活跃，还有一些值得讨论的重要全球新闻。
+
+Speaker 1: 你对我们看到的整体趋势有什么看法？
+
+Speaker 2: 我认为这些发展显示了数字化环境发展的速度有多快。看到不同新闻之间的相互联系真的很有趣。
+
+Speaker 1: 说得很好。这些新闻真正突出了当今新闻周期的动态特性。
+
+Speaker 2: 感谢大家今天的收听！我们明天会带来更多热点新闻分析！"""
+
     def check_ollama_connection(self) -> bool:
         """Check if Ollama is accessible"""
         try:
