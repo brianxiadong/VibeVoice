@@ -2,6 +2,8 @@ import argparse
 import os
 import logging
 import json
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -181,6 +183,40 @@ class NewsPodcastGenerator:
                 # Get audio file size
                 if audio_file.exists():
                     results['stats']['audio_size_mb'] = round(audio_file.stat().st_size / 1024 / 1024, 2)
+                
+                # Copy files to daily repository and perform git operations
+                try:
+                    logger.info("Starting file copy and git upload process...")
+                    
+                    # Copy files to ~/news/english-news-daily
+                    copy_success = self._copy_files_to_daily_repo(results['files'], timestamp)
+                    
+                    if copy_success:
+                        logger.info("Files copied successfully to daily repository")
+                        results['copy_success'] = True
+                        
+                        # Perform git operations
+                        home_dir = Path.home()
+                        target_base_dir = home_dir / "news" / "english-news-daily"
+                        
+                        git_success = self._git_commit_and_push(target_base_dir, timestamp)
+                        
+                        if git_success:
+                            logger.info("Git operations completed successfully")
+                            results['git_success'] = True
+                        else:
+                            logger.warning("Git operations failed, but files were copied")
+                            results['git_success'] = False
+                    else:
+                        logger.warning("File copy to daily repository failed")
+                        results['copy_success'] = False
+                        results['git_success'] = False
+                        
+                except Exception as e:
+                    logger.error(f"Error in post-processing (copy/git): {e}")
+                    results['copy_success'] = False
+                    results['git_success'] = False
+                    # Don't fail the entire process if copy/git fails
             
             return results
             
@@ -193,6 +229,93 @@ class NewsPodcastGenerator:
         """Get available voice options"""
         self._initialize_audio_generator()
         return self.audio_generator.get_available_voices()
+    
+    def _copy_files_to_daily_repo(self, files: Dict[str, str], timestamp: str) -> bool:
+        """Copy generated files to ~/news/english-news-daily with date-based organization"""
+        try:
+            # Get current date for folder organization
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            
+            # Define target directory
+            home_dir = Path.home()
+            target_base_dir = home_dir / "news" / "english-news-daily"
+            target_date_dir = target_base_dir / current_date
+            
+            # Create target directory if it doesn't exist
+            target_date_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created/verified target directory: {target_date_dir}")
+            
+            # Copy files
+            copied_files = {}
+            for file_type, file_path in files.items():
+                if file_path and Path(file_path).exists():
+                    source_file = Path(file_path)
+                    # Create new filename with timestamp prefix
+                    new_filename = f"{timestamp}_{source_file.name}"
+                    target_file = target_date_dir / new_filename
+                    
+                    # Copy file
+                    shutil.copy2(source_file, target_file)
+                    copied_files[file_type] = str(target_file)
+                    logger.info(f"Copied {file_type}: {source_file} -> {target_file}")
+                else:
+                    logger.warning(f"Source file not found for {file_type}: {file_path}")
+            
+            return len(copied_files) > 0
+            
+        except Exception as e:
+            logger.error(f"Error copying files to daily repo: {e}")
+            return False
+    
+    def _git_commit_and_push(self, target_dir: Path, timestamp: str) -> bool:
+        """Perform git add, commit, and push operations"""
+        try:
+            # Change to target directory
+            original_cwd = os.getcwd()
+            os.chdir(target_dir)
+            
+            # Check if it's a git repository
+            result = subprocess.run(['git', 'status'], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Target directory is not a git repository: {target_dir}")
+                return False
+            
+            # Git add all changes
+            result = subprocess.run(['git', 'add', '.'], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Git add failed: {result.stderr}")
+                return False
+            
+            # Check if there are changes to commit
+            result = subprocess.run(['git', 'diff', '--cached', '--quiet'], capture_output=True)
+            if result.returncode == 0:
+                logger.info("No changes to commit")
+                return True
+            
+            # Git commit
+            commit_message = f"Add news podcast for {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ({timestamp})"
+            result = subprocess.run(['git', 'commit', '-m', commit_message], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Git commit failed: {result.stderr}")
+                return False
+            
+            logger.info(f"Git commit successful: {commit_message}")
+            
+            # Git push
+            result = subprocess.run(['git', 'push'], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Git push failed: {result.stderr}")
+                return False
+            
+            logger.info("Git push successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in git operations: {e}")
+            return False
+        finally:
+            # Restore original working directory
+            os.chdir(original_cwd)
 
 def main():
     """Command line interface"""
@@ -283,7 +406,7 @@ def main():
         
         # Print results
         if results['success']:
-            print("\\n✓ Podcast generated successfully!")
+            print("\n✓ Podcast generated successfully!")
             print(f"Timestamp: {results['timestamp']}")
             print(f"News items processed: {results['stats']['news_count']}")
             print(f"Speakers: {results['stats']['speakers']}")
@@ -291,9 +414,23 @@ def main():
             if 'audio_size_mb' in results['stats']:
                 print(f"Audio file size: {results['stats']['audio_size_mb']} MB")
             
-            print("\\nGenerated files:")
+            print("\nGenerated files:")
             for file_type, file_path in results['files'].items():
                 print(f"  {file_type}: {file_path}")
+            
+            # Print copy and git status
+            print("\nPost-processing status:")
+            if results.get('copy_success', False):
+                print("  ✓ Files copied to ~/news/english-news-daily")
+            else:
+                print("  ✗ File copy failed")
+            
+            if results.get('git_success', False):
+                print("  ✓ Git commit and push successful")
+            elif results.get('copy_success', False):
+                print("  ✗ Git operations failed (files copied but not committed)")
+            else:
+                print("  ✗ Git operations skipped (copy failed)")
         else:
             print("\\n✗ Podcast generation failed")
             if 'error' in results:
