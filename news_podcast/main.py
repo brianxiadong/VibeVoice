@@ -196,7 +196,7 @@ class NewsPodcastGenerator:
                         results['copy_success'] = True
                         
                         # Perform git operations
-                        target_base_dir = Path("/news/english-news-daily")
+                        target_base_dir = Path("/root/news/english-news-daily")
                         
                         git_success = self._git_commit_and_push(target_base_dir, timestamp)
                         
@@ -230,13 +230,13 @@ class NewsPodcastGenerator:
         return self.audio_generator.get_available_voices()
     
     def _copy_files_to_daily_repo(self, files: Dict[str, str], timestamp: str) -> bool:
-        """Copy generated files to /news/english-news-daily with date-based organization"""
+        """Copy generated files to /root/news/english-news-daily with date-based organization"""
         try:
             # Get current date for folder organization
             current_date = datetime.now().strftime("%Y-%m-%d")
             
             # Define target directory
-            target_base_dir = Path("/news/english-news-daily")
+            target_base_dir = Path("/root/news/english-news-daily")
             target_date_dir = target_base_dir / current_date
             
             # Create target directory if it doesn't exist
