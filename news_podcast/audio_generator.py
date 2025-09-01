@@ -13,7 +13,7 @@ class PodcastAudioGenerator:
     
     def __init__(self, model_path: str = "microsoft/VibeVoice-1.5B", device: str = "cuda", debug: bool = False):
         # Initialize logger
-        self.logger = NewsLogger.get_logger(self.__class__.__name__, debug=debug)
+        self.logger = NewsLogger(debug=debug).get_logger()
         
         self.model_path = model_path
         self.device = device
