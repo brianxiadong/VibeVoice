@@ -10,15 +10,21 @@ class NewsLogger:
     
     _instance: Optional['NewsLogger'] = None
     _logger: Optional[logging.Logger] = None
+    _debug_mode: bool = False
     
-    def __new__(cls) -> 'NewsLogger':
+    def __new__(cls, debug: bool = False) -> 'NewsLogger':
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self):
+    def __init__(self, debug: bool = False):
         if self._logger is None:
-            self._setup_logger()
+            self._debug_mode = debug
+            self._setup_logger(debug)
+        elif debug != self._debug_mode:
+            # 如果调试模式发生变化，更新设置
+            self._debug_mode = debug
+            self.set_debug_mode(debug)
     
     def _setup_logger(self, debug: bool = False) -> None:
         """设置日志配置"""
@@ -63,12 +69,16 @@ class NewsLogger:
                 if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
                     handler.setLevel(level)
     
+    def get_logger(self) -> logging.Logger:
+        """获取日志记录器"""
+        if self._logger is None:
+            self._setup_logger(self._debug_mode)
+        return self._logger
+    
     @property
     def logger(self) -> logging.Logger:
         """获取日志记录器"""
-        if self._logger is None:
-            self._setup_logger()
-        return self._logger
+        return self.get_logger()
 
 
 # 全局日志实例
