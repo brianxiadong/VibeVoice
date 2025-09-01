@@ -636,7 +636,7 @@ def main():
             news_limit=args.news_limit,
             count=args.count,
             num_speakers=args.speakers,
-            max_news_items=args.max_news,
+            max_news_items=args.max_news_items,
             voice_config=voice_config
         )
         
