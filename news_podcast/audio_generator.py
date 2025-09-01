@@ -78,11 +78,19 @@ class PodcastAudioGenerator:
                 device_map = "cpu"
                 torch_dtype = torch.float32  # Use float32 for CPU
             else:
-                device_map = self.device if ':' in self.device else 'cuda'
+                # For specific GPU devices like cuda:2, use device_map="auto" and manually move
+                if ':' in self.device:
+                    device_map = "auto"  # Let transformers handle device mapping
+                    target_device = self.device
+                else:
+                    device_map = 'cuda'
+                    target_device = 'cuda'
                 torch_dtype = torch.bfloat16
             
             # Load model with correct parameters
             attn_implementation = "flash_attention_2" if self.device != "cpu" else "eager"
+            
+            logger.info(f"Using device_map: {device_map}, target_device: {self.device}")
             
             self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                 self.model_path,
@@ -91,8 +99,30 @@ class PodcastAudioGenerator:
                 attn_implementation=attn_implementation
             )
             
+            # For specific GPU devices, manually move the model to the target device
+            if self.device != "cpu" and ':' in self.device:
+                logger.info(f"Manually moving model to {self.device}")
+                try:
+                    self.model = self.model.to(self.device)
+                except Exception as e:
+                    logger.warning(f"Failed to move model to {self.device}: {e}")
+                    logger.info("Model will use default device mapping")
+            
             self.model.eval()
             self.model.set_ddpm_inference_steps(num_steps=10)
+            
+            # Verify actual device placement
+            if hasattr(self.model, 'device'):
+                logger.info(f"Model device after loading: {self.model.device}")
+            elif hasattr(self.model, 'hf_device_map'):
+                logger.info(f"Model device map: {self.model.hf_device_map}")
+            
+            # Check individual component devices
+            if hasattr(self.model, 'model'):
+                if hasattr(self.model.model, 'device'):
+                    logger.info(f"Inner model device: {self.model.model.device}")
+                if hasattr(self.model.model, 'language_model') and hasattr(self.model.model.language_model, 'device'):
+                    logger.info(f"Language model device: {self.model.model.language_model.device}")
             
             if hasattr(self.model.model, 'language_model'):
                 logger.info(f"Language model attention: {self.model.model.language_model.config._attn_implementation}")
