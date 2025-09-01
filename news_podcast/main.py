@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from news_fetcher import NewsFetcher
-from ollama_processor import OllamaProcessor
-from podcast_audio_generator import PodcastAudioGenerator
+from .news_fetcher import NewsFetcher
+from .ollama_processor import OllamaProcessor
+from .audio_generator import PodcastAudioGenerator
 
 # Setup logging
 logging.basicConfig(
