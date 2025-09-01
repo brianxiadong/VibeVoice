@@ -338,21 +338,58 @@ Speaker 1: 说得很好。这些新闻真正突出了当今新闻周期的动态
 Speaker 2: 感谢大家今天的收听！我们明天会带来更多热点新闻分析！"""
 
     def check_ollama_connection(self) -> bool:
-        """Check if Ollama is accessible"""
+        """Check if Ollama is accessible with detailed debugging"""
         try:
             self.logger.debug(f"Testing connection to Ollama at {self.base_url}")
-            response = self.session.get(f"{self.base_url}/api/version", timeout=5)
+            
+            # Test version endpoint first
+            version_url = f"{self.base_url}/api/version"
+            self.logger.debug(f"Attempting to connect to: {version_url}")
+            
+            response = self.session.get(version_url, timeout=10)  # Increased timeout
+            
             if response.status_code == 200:
-                self.logger.debug("Ollama connection test successful")
+                version_data = response.json()
+                self.logger.debug(f"Ollama connection successful - Version: {version_data.get('version', 'unknown')}")
+                
+                # Also test the tags endpoint to ensure full functionality
+                try:
+                    tags_response = self.session.get(f"{self.base_url}/api/tags", timeout=5)
+                    if tags_response.status_code == 200:
+                        self.logger.debug("Tags endpoint also accessible")
+                    else:
+                        self.logger.warning(f"Tags endpoint returned status {tags_response.status_code}")
+                except Exception as tags_error:
+                    self.logger.warning(f"Tags endpoint test failed: {tags_error}")
+                
                 return True
             else:
-                self.logger.warning(f"Ollama connection test failed with status code: {response.status_code}")
+                self.logger.error(f"Ollama connection failed with HTTP {response.status_code}")
+                self.logger.error(f"Response headers: {dict(response.headers)}")
+                try:
+                    error_text = response.text[:500]  # First 500 chars of error
+                    self.logger.error(f"Response body: {error_text}")
+                except:
+                    pass
                 return False
-        except requests.RequestException as e:
-            self.logger.debug(f"Ollama connection test failed: {e}")
+                
+        except requests.exceptions.ConnectTimeout as e:
+            self.logger.error(f"Connection timeout to Ollama: {e}")
+            self.logger.error("This usually means the server is not responding or is overloaded")
+            return False
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error(f"Connection error to Ollama: {e}")
+            self.logger.error("This usually means the server is not running or not accessible")
+            return False
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Request error to Ollama: {e}")
+            self.logger.error(f"Error type: {type(e).__name__}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error testing Ollama connection: {e}")
+            self.logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     def list_available_models(self) -> List[str]:

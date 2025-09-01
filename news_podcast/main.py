@@ -54,19 +54,82 @@ class NewsPodcastGenerator:
         self._check_connections()
     
     def _check_connections(self):
-        """Check if all services are available"""
+        """Check if all services are available with detailed debugging"""
         self.logger.info("Checking service connections...")
         
-        # Check Ollama connection
-        if self.ollama_processor.check_ollama_connection():
-            self.logger.info(f"✓ Ollama connection successful ({self.ollama_url})")
-            models = self.ollama_processor.list_available_models()
-            self.logger.info(f"Available models: {models}")
-            if self.ollama_model not in [model.split(':')[0] for model in models]:
-                self.logger.warning(f"Specified model '{self.ollama_model}' not found in available models")
-        else:
-            self.logger.error(f"✗ Cannot connect to Ollama at {self.ollama_url}")
-            raise ConnectionError(f"Cannot connect to Ollama at {self.ollama_url}")
+        # Enhanced Ollama connection check with detailed debugging
+        self.logger.info(f"Testing Ollama connection to: {self.ollama_url}")
+        
+        try:
+            # First, test basic network connectivity
+            import socket
+            from urllib.parse import urlparse
+            
+            parsed_url = urlparse(self.ollama_url)
+            host = parsed_url.hostname
+            port = parsed_url.port or 11434
+            
+            self.logger.info(f"Testing network connectivity to {host}:{port}...")
+            
+            # Test socket connection with timeout
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)  # 10 second timeout
+            result = sock.connect_ex((host, port))
+            sock.close()
+            
+            if result != 0:
+                self.logger.error(f"✗ Network connection failed to {host}:{port} (error code: {result})")
+                self.logger.error("Possible causes: 1) Ollama service not running 2) Network connectivity issues 3) Firewall blocking connection")
+                raise ConnectionError(f"Network connection failed to {host}:{port}")
+            else:
+                self.logger.info(f"✓ Network connectivity to {host}:{port} successful")
+            
+            # Now test Ollama API connection
+            if self.ollama_processor.check_ollama_connection():
+                self.logger.info(f"✓ Ollama API connection successful ({self.ollama_url})")
+                
+                # List and validate models
+                try:
+                    models = self.ollama_processor.list_available_models()
+                    self.logger.info(f"Available models ({len(models)}): {models}")
+                    
+                    # Check if specified model is available
+                    model_names = [model.split(':')[0] for model in models]
+                    if self.ollama_model not in model_names:
+                        self.logger.warning(f"Specified model '{self.ollama_model}' not found in available models")
+                        self.logger.warning(f"Available model names: {model_names}")
+                        # Don't fail here, just warn - the model might still work
+                    else:
+                        self.logger.info(f"✓ Specified model '{self.ollama_model}' is available")
+                        
+                except Exception as model_error:
+                    self.logger.error(f"Failed to list models: {model_error}")
+                    # Continue anyway, connection might still work
+                    
+            else:
+                self.logger.error(f"✗ Ollama API connection failed to {self.ollama_url}")
+                self.logger.error("Troubleshooting steps:")
+                self.logger.error("1. Verify Ollama service is running: curl http://172.36.237.245:11434/api/version")
+                self.logger.error("2. Check if the specified model is loaded: curl http://172.36.237.245:11434/api/tags")
+                self.logger.error("3. Try restarting Ollama service")
+                self.logger.error("4. Check server logs for any errors")
+                raise ConnectionError(f"Ollama API connection failed to {self.ollama_url}")
+                
+        except socket.gaierror as e:
+            self.logger.error(f"✗ DNS resolution failed for {host}: {e}")
+            self.logger.error("Check if the hostname/IP address is correct")
+            raise ConnectionError(f"DNS resolution failed for {host}: {e}")
+        except socket.timeout as e:
+            self.logger.error(f"✗ Connection timeout to {host}:{port}: {e}")
+            self.logger.error("The server might be overloaded or network is slow")
+            raise ConnectionError(f"Connection timeout to {host}:{port}: {e}")
+        except Exception as e:
+            self.logger.error(f"✗ Unexpected error during connection check: {e}")
+            self.logger.error(f"Error type: {type(e).__name__}")
+            raise ConnectionError(f"Connection check failed: {e}")
+            
+        self.logger.info("✓ All service connections verified successfully")
+        return True
     
     def _initialize_audio_generator(self):
         """Initialize audio generator only when needed"""
