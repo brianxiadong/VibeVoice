@@ -88,63 +88,20 @@ class NewsFetcher:
             logger.error(f"Error fetching Reddit: {e}")
             return []
     
-    def fetch_github_trending(self, language: str = '', limit: int = 10) -> List[Dict[str, Any]]:
-        """Fetch trending repositories from GitHub with time filtering"""
-        try:
-            # Use GitHub's search API for trending repos
-            today = datetime.now()
-            hours_ago = today - timedelta(hours=self.hours_filter)
-            date_filter = hours_ago.strftime('%Y-%m-%dT%H:%M:%S')
-            
-            query = f"created:>{date_filter}"
-            if language:
-                query += f" language:{language}"
-            
-            url = f'https://api.github.com/search/repositories'
-            params = {
-                'q': query,
-                'sort': 'stars',
-                'order': 'desc',
-                'per_page': limit
-            }
-            
-            response = self.session.get(url, params=params)
-            data = response.json()
-            
-            stories = []
-            for repo in data.get('items', []):
-                created_at = repo.get('created_at', '')
-                stories.append({
-                    'title': f"{repo.get('name', '')} - {repo.get('description', '')}",
-                    'url': repo.get('html_url', ''),
-                    'score': repo.get('stargazers_count', 0),
-                    'text': repo.get('description', ''),
-                    'source': 'GitHub Trending',
-                    'timestamp': datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp() if created_at else 0,
-                    'published_time': created_at
-                })
-            
-            logger.info(f"Fetched {len(stories)} recent GitHub trending repos (within {self.hours_filter} hours)")
-            return stories
-            
-        except Exception as e:
-            logger.error(f"Error fetching GitHub trending: {e}")
-            return []
+
     
     def fetch_all_news(self, limit_per_source: int = 5) -> List[Dict[str, Any]]:
-        """Fetch news from all sources"""
+        """Fetch news from all sources (Hacker News and Reddit)"""
         all_news = []
         
-        # Fetch from different sources
+        # Fetch from different sources - only time-sensitive news sources
         hacker_news = self.fetch_hacker_news_top(limit_per_source)
         reddit_tech = self.fetch_reddit_hot('technology', limit_per_source)
         reddit_world = self.fetch_reddit_hot('worldnews', limit_per_source)
-        github_trending = self.fetch_github_trending(limit=limit_per_source)
         
         all_news.extend(hacker_news)
         all_news.extend(reddit_tech)
         all_news.extend(reddit_world)
-        all_news.extend(github_trending)
         
         # Sort by score/popularity
         all_news.sort(key=lambda x: x.get('score', 0), reverse=True)
@@ -177,6 +134,65 @@ class NewsFetcher:
         
         logger.info(f"Filtered to {len(unique_news)} unique recent news items (within {self.hours_filter} hours)")
         return unique_news
+    
+    def select_best_news(self, news_items: List[Dict[str, Any]], count: int = 3) -> List[Dict[str, Any]]:
+        """Select the best N news items based on score, recency, and content quality"""
+        if not news_items:
+            return []
+        
+        if len(news_items) <= count:
+            return news_items
+        
+        # Calculate composite score for each news item
+        scored_news = []
+        current_time = time.time()
+        
+        for item in news_items:
+            # Base score from the source (upvotes, etc.)
+            base_score = item.get('score', 0)
+            
+            # Recency score (more recent = higher score)
+            timestamp = item.get('timestamp', 0)
+            hours_old = (current_time - timestamp) / 3600 if timestamp > 0 else 999
+            recency_score = max(0, 24 - hours_old) / 24  # Normalize to 0-1
+            
+            # Content quality score based on title length and text availability
+            title = item.get('title', '')
+            text = item.get('text', '')
+            
+            # Prefer titles that are not too short or too long
+            title_length_score = 1.0
+            if len(title) < 20:
+                title_length_score = 0.5
+            elif len(title) > 150:
+                title_length_score = 0.7
+            
+            # Bonus for having additional text content
+            text_bonus = 0.2 if text and len(text) > 50 else 0
+            
+            # Composite score calculation
+            composite_score = (
+                base_score * 0.4 +  # 40% weight on original score
+                recency_score * 100 * 0.3 +  # 30% weight on recency
+                title_length_score * 50 * 0.2 +  # 20% weight on title quality
+                text_bonus * 50 * 0.1  # 10% weight on text availability
+            )
+            
+            scored_news.append({
+                **item,
+                'composite_score': composite_score,
+                'hours_old': hours_old
+            })
+        
+        # Sort by composite score and select top N
+        scored_news.sort(key=lambda x: x['composite_score'], reverse=True)
+        selected_news = scored_news[:count]
+        
+        logger.info(f"Selected {len(selected_news)} best news items from {len(news_items)} candidates")
+        for i, item in enumerate(selected_news, 1):
+            logger.info(f"  {i}. {item['title'][:60]}... (Score: {item['composite_score']:.1f}, {item['hours_old']:.1f}h old)")
+        
+        return selected_news
     
     def _similar_titles(self, title1: str, title2: str, threshold: float = 0.7) -> bool:
         """Check if two titles are similar"""

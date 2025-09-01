@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .news_fetcher import NewsFetcher
-from .ollama_processor import OllamaProcessor
-from .audio_generator import PodcastAudioGenerator
+from news_fetcher import NewsFetcher
+from ollama_processor import OllamaProcessor
+from podcast_audio_generator import PodcastAudioGenerator
 
 # Setup logging
 logging.basicConfig(
@@ -117,51 +117,38 @@ class NewsPodcastGenerator:
         
         return success
     
-    def generate_full_podcast(
+    def generate_single_news_podcast(
         self,
-        output_dir: str = "./output",
+        news_item: Dict[str, Any],
+        output_dir: str,
+        timestamp: str,
         num_speakers: int = 2,
-        news_limit: int = 15,
-        max_news_items: int = 10,
         voice_preferences: Optional[Dict[str, str]] = None,
         save_intermediate: bool = True
     ) -> Dict[str, Any]:
-        """Generate complete podcast from news to audio"""
+        """Generate podcast for a single news item"""
         
         # Create output directory
         output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
+        output_path.mkdir(parents=True, exist_ok=True)
         
-        # Generate timestamp-based filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_filename = f"news_podcast_{timestamp}"
+        # Generate filename based on news title and timestamp
+        safe_title = "".join(c for c in news_item['title'][:50] if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_title = safe_title.replace(' ', '_')
+        base_filename = f"{timestamp}_{safe_title}"
         
         results = {
             'timestamp': timestamp,
             'success': False,
             'files': {},
-            'stats': {}
+            'stats': {},
+            'news_item': news_item
         }
         
         try:
-            # Step 1: Fetch news
-            news_items = self.fetch_news(news_limit)
-            results['stats']['news_count'] = len(news_items)
-            
-            if not news_items:
-                logger.error("No news items found")
-                return results
-            
-            # Save news data if requested
-            if save_intermediate:
-                news_file = output_path / f"{base_filename}_news.json"
-                with open(news_file, 'w', encoding='utf-8') as f:
-                    json.dump(news_items, f, indent=2, ensure_ascii=False)
-                results['files']['news_data'] = str(news_file)
-                logger.info(f"News data saved to: {news_file}")
-            
-            # Step 2: Process to dialogue
-            dialogue = self.process_news_to_podcast(news_items, num_speakers, max_news_items)
+            # Process single news item to dialogue
+            logger.info(f"Processing news: {news_item['title'][:60]}...")
+            dialogue = self.process_news_to_podcast([news_item], num_speakers, 1)
             results['stats']['speakers'] = num_speakers
             
             if not dialogue:
@@ -176,22 +163,18 @@ class NewsPodcastGenerator:
                 results['files']['dialogue'] = str(dialogue_file)
                 logger.info(f"Dialogue saved to: {dialogue_file}")
             
-            # Step 2.5: Generate Chinese translation
+            # Generate Chinese translation
             logger.info("Generating Chinese translation...")
             chinese_dialogue = self.ollama_processor.translate_to_chinese(dialogue)
             
-            if chinese_dialogue:
-                # Save Chinese dialogue if requested
-                if save_intermediate:
-                    chinese_dialogue_file = output_path / f"{base_filename}_dialogue_chinese.txt"
-                    with open(chinese_dialogue_file, 'w', encoding='utf-8') as f:
-                        f.write(chinese_dialogue)
-                    results['files']['chinese_dialogue'] = str(chinese_dialogue_file)
-                    logger.info(f"Chinese dialogue saved to: {chinese_dialogue_file}")
-            else:
-                logger.warning("Failed to generate Chinese translation")
+            if chinese_dialogue and save_intermediate:
+                chinese_dialogue_file = output_path / f"{base_filename}_dialogue_chinese.txt"
+                with open(chinese_dialogue_file, 'w', encoding='utf-8') as f:
+                    f.write(chinese_dialogue)
+                results['files']['chinese_dialogue'] = str(chinese_dialogue_file)
+                logger.info(f"Chinese dialogue saved to: {chinese_dialogue_file}")
             
-            # Step 3: Generate audio
+            # Generate audio
             audio_file = output_path / f"{base_filename}.wav"
             audio_success = self.generate_audio(dialogue, str(audio_file), voice_preferences)
             
@@ -202,46 +185,178 @@ class NewsPodcastGenerator:
                 # Get audio file size
                 if audio_file.exists():
                     results['stats']['audio_size_mb'] = round(audio_file.stat().st_size / 1024 / 1024, 2)
-                
-                # Copy files to daily repository and perform git operations
-                try:
-                    logger.info("Starting file copy and git upload process...")
-                    
-                    # Copy files to ~/news/english-news-daily
-                    copy_success = self._copy_files_to_daily_repo(results['files'], timestamp)
-                    
-                    if copy_success:
-                        logger.info("Files copied successfully to daily repository")
-                        results['copy_success'] = True
-                        
-                        # Perform git operations
-                        target_base_dir = Path("/root/news/english-news-daily")
-                        
-                        git_success = self._git_commit_and_push(target_base_dir, timestamp)
-                        
-                        if git_success:
-                            logger.info("Git operations completed successfully")
-                            results['git_success'] = True
-                        else:
-                            logger.warning("Git operations failed, but files were copied")
-                            results['git_success'] = False
-                    else:
-                        logger.warning("File copy to daily repository failed")
-                        results['copy_success'] = False
-                        results['git_success'] = False
-                        
-                except Exception as e:
-                    logger.error(f"Error in post-processing (copy/git): {e}")
-                    results['copy_success'] = False
-                    results['git_success'] = False
-                    # Don't fail the entire process if copy/git fails
             
             return results
             
         except Exception as e:
-            logger.error(f"Error in podcast generation: {e}")
+            logger.error(f"Error in single news podcast generation: {e}")
             results['error'] = str(e)
             return results
+    
+    def generate_multiple_podcasts(
+        self,
+        output_dir: str = "./output",
+        num_speakers: int = 2,
+        news_limit: int = 15,
+        podcast_count: int = 3,
+        voice_preferences: Optional[Dict[str, str]] = None,
+        save_intermediate: bool = True
+    ) -> Dict[str, Any]:
+        """Generate multiple individual podcasts, one for each selected news item"""
+        
+        # Create base output directory
+        base_output_path = Path(output_dir)
+        base_output_path.mkdir(exist_ok=True)
+        
+        overall_results = {
+            'success': False,
+            'podcasts': [],
+            'stats': {
+                'total_requested': podcast_count,
+                'total_generated': 0,
+                'total_successful': 0
+            }
+        }
+        
+        try:
+            # Step 1: Fetch and select best news
+            logger.info(f"Fetching news and selecting best {podcast_count} items...")
+            all_news = self.fetch_news(news_limit)
+            
+            if not all_news:
+                logger.error("No news items found")
+                return overall_results
+            
+            # Select best news items
+            selected_news = self.news_fetcher.select_best_news(all_news, podcast_count)
+            overall_results['stats']['news_available'] = len(all_news)
+            overall_results['stats']['news_selected'] = len(selected_news)
+            
+            if not selected_news:
+                logger.error("No suitable news items selected")
+                return overall_results
+            
+            # Step 2: Generate individual podcasts
+            for i, news_item in enumerate(selected_news, 1):
+                logger.info(f"\n=== Generating podcast {i}/{len(selected_news)} ===")
+                
+                # Create timestamp with slight delay to ensure uniqueness
+                import time
+                time.sleep(1)  # Ensure different timestamps
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Create individual output directory with timestamp
+                individual_output_dir = base_output_path / timestamp
+                
+                # Generate single podcast
+                podcast_result = self.generate_single_news_podcast(
+                    news_item=news_item,
+                    output_dir=str(individual_output_dir),
+                    timestamp=timestamp,
+                    num_speakers=num_speakers,
+                    voice_preferences=voice_preferences,
+                    save_intermediate=save_intermediate
+                )
+                
+                overall_results['podcasts'].append(podcast_result)
+                overall_results['stats']['total_generated'] += 1
+                
+                if podcast_result['success']:
+                    overall_results['stats']['total_successful'] += 1
+                    logger.info(f"✓ Podcast {i} generated successfully")
+                else:
+                    logger.error(f"✗ Podcast {i} generation failed")
+            
+            # Update overall success status
+            overall_results['success'] = overall_results['stats']['total_successful'] > 0
+            
+            return overall_results
+            
+        except Exception as e:
+            logger.error(f"Error in multiple podcast generation: {e}")
+            overall_results['error'] = str(e)
+            return overall_results
+    
+    def generate_full_podcast(
+        self,
+        output_dir: str = "./output",
+        num_speakers: int = 2,
+        news_limit: int = 15,
+        max_news_items: int = 10,
+        voice_preferences: Optional[Dict[str, str]] = None,
+        save_intermediate: bool = True,
+        count: int = 3
+    ) -> Dict[str, Any]:
+        """Generate complete podcast with news fetching, processing, and audio generation"""
+        try:
+            logger.info("Starting full podcast generation...")
+            
+            # Check connections first
+            if not self._check_connections():
+                return {"success": False, "error": "Service connections failed"}
+            
+            # Fetch news
+            logger.info("Fetching news...")
+            news_items = self.fetch_news(news_limit)
+            if not news_items:
+                return {"success": False, "error": "No news items found"}
+            
+            logger.info(f"Found {len(news_items)} news items")
+            
+            # Select best news items
+            selected_news = self.news_fetcher.select_best_news(news_items, count)
+            logger.info(f"Selected {len(selected_news)} best news items for podcast generation")
+            
+            # Generate multiple podcasts
+            podcast_results = self.generate_multiple_podcasts(
+                output_dir=output_dir,
+                num_speakers=num_speakers,
+                news_limit=news_limit,
+                podcast_count=count,
+                voice_preferences=voice_preferences,
+                save_intermediate=save_intermediate
+            )
+            
+            if not podcast_results.get('podcasts'):
+                return {"success": False, "error": "Failed to generate any podcasts"}
+            
+            # Count successful podcasts
+            successful_podcasts = [p for p in podcast_results['podcasts'] if p.get('success', False)]
+            logger.info(f"Successfully generated {len(successful_podcasts)} out of {len(podcast_results['podcasts'])} podcasts")
+            
+            # Copy files to daily repo with new structure
+            if successful_podcasts:
+                copy_success = self._copy_multiple_podcasts_to_daily_repo(successful_podcasts)
+                if copy_success:
+                    # Perform git operations
+                    target_dir = Path("/root/news/english-news-daily")
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    git_success = self._git_commit_and_push(target_dir, timestamp)
+                    
+                    return {
+                        "success": True,
+                        "podcasts_generated": len(successful_podcasts),
+                        "total_attempted": len(podcast_results['podcasts']),
+                        "files_copied": copy_success,
+                        "git_pushed": git_success,
+                        "results": successful_podcasts
+                    }
+                else:
+                    logger.warning("Failed to copy files to daily repo")
+                    return {
+                        "success": True,
+                        "podcasts_generated": len(successful_podcasts),
+                        "total_attempted": len(podcast_results['podcasts']),
+                        "files_copied": False,
+                        "git_pushed": False,
+                        "results": successful_podcasts
+                    }
+            else:
+                return {"success": False, "error": "No successful podcasts generated"}
+            
+        except Exception as e:
+            logger.error(f"Error in full podcast generation: {e}")
+            return {"success": False, "error": str(e)}
     
     def get_available_voices(self) -> Dict[str, str]:
         """Get available voice options"""
@@ -284,6 +399,65 @@ class NewsPodcastGenerator:
             
         except Exception as e:
             logger.error(f"Error copying files to daily repo: {e}")
+            return False
+    
+    def _copy_multiple_podcasts_to_daily_repo(self, podcast_results: list) -> bool:
+        """Copy multiple podcast files to /root/news/english-news-daily with timestamp-based organization"""
+        try:
+            # Get current date for folder organization
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            year_month = datetime.now().strftime("%Y-%m")
+            
+            # Define target directory with two-level structure: year-month/year-month-day
+            target_base_dir = Path("/root/news/english-news-daily")
+            target_month_dir = target_base_dir / year_month
+            target_date_dir = target_month_dir / current_date
+            
+            # Create target directory if it doesn't exist
+            target_date_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created/verified target directory: {target_date_dir}")
+            
+            total_copied = 0
+            
+            # Copy files for each podcast
+            for i, podcast_result in enumerate(podcast_results, 1):
+                if not podcast_result.get('success', False):
+                    logger.warning(f"Skipping failed podcast {i}")
+                    continue
+                
+                timestamp = podcast_result.get('timestamp', '')
+                files = podcast_result.get('files', {})
+                
+                # Create timestamp-based subdirectory
+                timestamp_dir = target_date_dir / timestamp
+                timestamp_dir.mkdir(exist_ok=True)
+                
+                # Copy files for this podcast
+                for file_type, file_path in files.items():
+                    if file_path and Path(file_path).exists():
+                        source_file = Path(file_path)
+                        target_file = timestamp_dir / source_file.name
+                        
+                        # Copy file
+                        shutil.copy2(source_file, target_file)
+                        total_copied += 1
+                        logger.info(f"Copied podcast {i} {file_type}: {source_file} -> {target_file}")
+                    else:
+                        logger.warning(f"Source file not found for podcast {i} {file_type}: {file_path}")
+                
+                # Also save news metadata
+                news_item = podcast_result.get('news_item', {})
+                if news_item:
+                    metadata_file = timestamp_dir / f"{timestamp}_metadata.json"
+                    with open(metadata_file, 'w', encoding='utf-8') as f:
+                        json.dump(news_item, f, indent=2, ensure_ascii=False)
+                    total_copied += 1
+                    logger.info(f"Saved podcast {i} metadata: {metadata_file}")
+            
+            return total_copied > 0
+            
+        except Exception as e:
+            logger.error(f"Error copying multiple podcasts to daily repo: {e}")
             return False
     
     def _git_commit_and_push(self, target_dir: Path, timestamp: str) -> bool:
@@ -399,6 +573,12 @@ def main():
         default=24,
         help="Filter news within the last N hours (default: 24)"
     )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=3,
+        help="Number of individual news podcasts to generate (default: 3)"
+    )
     
     args = parser.parse_args()
     
@@ -433,40 +613,51 @@ def main():
             num_speakers=args.speakers,
             news_limit=args.news_limit,
             max_news_items=args.max_news_items,
-            voice_preferences=voice_preferences
+            voice_preferences=voice_preferences,
+            count=args.count
         )
         
         # Print results
         if results['success']:
-            print("\n✓ Podcast generated successfully!")
-            print(f"Timestamp: {results['timestamp']}")
-            print(f"News items processed: {results['stats']['news_count']}")
-            print(f"Speakers: {results['stats']['speakers']}")
+            print("\n✓ Podcast generation completed successfully!")
+            print(f"📊 Statistics:")
+            print(f"   Podcasts generated: {results.get('podcasts_generated', 0)} out of {results.get('total_attempted', 0)}")
             
-            if 'audio_size_mb' in results['stats']:
-                print(f"Audio file size: {results['stats']['audio_size_mb']} MB")
-            
-            print("\nGenerated files:")
-            for file_type, file_path in results['files'].items():
-                print(f"  {file_type}: {file_path}")
+            if results.get('results'):
+                print(f"\n📁 Generated podcasts:")
+                for i, podcast in enumerate(results['results'], 1):
+                    print(f"   Podcast {i} (Timestamp: {podcast.get('timestamp', 'N/A')}):")
+                    if 'files' in podcast:
+                        for file_type, file_path in podcast['files'].items():
+                            print(f"     {file_type}: {file_path}")
+                    if 'news_item' in podcast:
+                        news = podcast['news_item']
+                        print(f"     News: {news.get('title', 'N/A')[:60]}...")
             
             # Print copy and git status
             print("\nPost-processing status:")
-            if results.get('copy_success', False):
+            if results.get('files_copied', False):
                 print("  ✓ Files copied to ~/news/english-news-daily")
             else:
                 print("  ✗ File copy failed")
             
-            if results.get('git_success', False):
+            if results.get('git_pushed', False):
                 print("  ✓ Git commit and push successful")
-            elif results.get('copy_success', False):
+            elif results.get('files_copied', False):
                 print("  ✗ Git operations failed (files copied but not committed)")
             else:
                 print("  ✗ Git operations skipped (copy failed)")
         else:
-            print("\\n✗ Podcast generation failed")
+            print("\n✗ Podcast generation failed")
             if 'error' in results:
                 print(f"Error: {results['error']}")
+            if results.get('results'):
+                print("📁 Partial results:")
+                for i, podcast in enumerate(results['results'], 1):
+                    if podcast.get('success'):
+                        print(f"   Podcast {i}: Success")
+                    else:
+                        print(f"   Podcast {i}: Failed - {podcast.get('error', 'Unknown error')}")
         
     except Exception as e:
         logger.error(f"Error in main: {e}")
