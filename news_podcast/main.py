@@ -637,7 +637,7 @@ def main():
             count=args.count,
             num_speakers=args.speakers,
             max_news_items=args.max_news_items,
-            voice_config=voice_config
+            voice_preferences=voice_config
         )
         
         if result['success']:
