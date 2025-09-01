@@ -59,6 +59,7 @@ python -m news_podcast.main \
 - `--max-news-items`: Max news items to include in podcast (default: 10)
 - `--voice-config`: JSON file with voice preferences
 - `--list-voices`: Show available voices
+- `--device`: GPU device to use (default: cuda). Examples: cuda, cuda:0, cuda:1, cpu
 
 ### Voice Configuration
 
@@ -79,16 +80,32 @@ Available English voices:
 - Frank (man) 
 - Maya (woman)
 
+### GPU Device Selection
+
+To solve CUDA out of memory issues or use specific GPUs:
+
+```bash
+# Use specific GPU (e.g., GPU 1 instead of GPU 0)
+python -m news_podcast.main --device cuda:1
+
+# Use CPU (slower but no memory limits)
+python -m news_podcast.main --device cpu
+
+# Check available GPUs
+nvidia-smi
+```
+
 ### Python API
 
 ```python
 from news_podcast.main import NewsPodcastGenerator
 
-# Initialize
+# Initialize with specific GPU
 generator = NewsPodcastGenerator(
     model_path="microsoft/VibeVoice-1.5B",
     ollama_url="http://172.36.237.245:11434",
-    ollama_model="llama3.1"
+    ollama_model="llama3.1",
+    device="cuda:1"  # Use GPU 1
 )
 
 # Generate complete podcast
@@ -150,10 +167,47 @@ ollama pull llama3.1
 
 ## Troubleshooting
 
+### CUDA Memory Issues
+
+If you encounter "CUDA out of memory" errors:
+
+1. **Use a different GPU**:
+   ```bash
+   # Check GPU memory usage
+   nvidia-smi
+   
+   # Use GPU with more free memory
+   python -m news_podcast.main --device cuda:1
+   ```
+
+2. **Use CPU mode** (slower but no memory limits):
+   ```bash
+   python -m news_podcast.main --device cpu
+   ```
+
+3. **Use smaller model**:
+   ```bash
+   python -m news_podcast.main --model-path "microsoft/VibeVoice-1.5B"
+   ```
+
+4. **Set PyTorch memory allocation** (as suggested in error message):
+   ```bash
+   export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+   python -m news_podcast.main
+   ```
+
+### Memory Optimization Features
+
+The system includes automatic memory management:
+- GPU memory is cleared after each audio segment generation
+- Models are moved between GPU/CPU as needed
+- Memory usage is monitored and reported
+
+### Other Issues
+
 1. **Ollama Connection Issues**: Verify Ollama server is running and accessible at the configured URL
-2. **CUDA Memory Issues**: Use the 1.5B model instead of 7B, or reduce batch size
-3. **Audio Quality**: Try the larger 7B model for better quality
-4. **Missing Voices**: Check that English voice files exist in `demo/voices/`
+2. **Audio Quality**: Try the larger model for better quality (if you have enough GPU memory)
+3. **Missing Voices**: Check that English voice files exist in `demo/voices/`
 
 ## Example Output
 

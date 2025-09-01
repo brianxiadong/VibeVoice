@@ -13,12 +13,14 @@ logger = logging.getLogger(__name__)
 class PodcastAudioGenerator:
     """Generates multi-speaker podcast audio using VibeVoice"""
     
-    def __init__(self, model_path: str = "microsoft/VibeVoice-1.5B"):
+    def __init__(self, model_path: str = "microsoft/VibeVoice-1.5B", device: str = "cuda"):
         self.model_path = model_path
+        self.device = device
         self.model = None
         self.processor = None
         self.voice_presets = {}
         self._setup_voice_presets()
+        self._validate_device()
         self._load_model()
     
     def _setup_voice_presets(self):
@@ -39,20 +41,53 @@ class PodcastAudioGenerator:
         
         logger.info(f"Available voices: {list(self.voice_presets.keys())}")
     
+    def _validate_device(self):
+        """Validate and setup GPU device"""
+        if self.device.startswith('cuda'):
+            if not torch.cuda.is_available():
+                logger.warning("CUDA not available, falling back to CPU")
+                self.device = "cpu"
+            else:
+                # Check if specific GPU index is specified
+                if ':' in self.device:
+                    gpu_id = int(self.device.split(':')[1])
+                    if gpu_id >= torch.cuda.device_count():
+                        logger.warning(f"GPU {gpu_id} not available, using GPU 0")
+                        self.device = "cuda:0"
+                
+                # Log GPU memory info
+                if self.device != "cpu":
+                    gpu_id = 0 if ':' not in self.device else int(self.device.split(':')[1])
+                    memory_allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
+                    memory_reserved = torch.cuda.memory_reserved(gpu_id) / 1024**3
+                    memory_total = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+                    logger.info(f"GPU {gpu_id} memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved, {memory_total:.2f}GB total")
+        
+        logger.info(f"Using device: {self.device}")
+    
     def _load_model(self):
         """Load VibeVoice model and processor"""
         try:
-            logger.info(f"Loading VibeVoice model: {self.model_path}")
+            logger.info(f"Loading VibeVoice model: {self.model_path} on device: {self.device}")
             
             # Load processor
             self.processor = VibeVoiceProcessor.from_pretrained(self.model_path)
             
-            # Load model with correct parameters (same as inference_from_file.py)
-            attn_implementation = "flash_attention_2"  # Recommended for better audio quality
+            # Determine device_map based on device setting
+            if self.device == "cpu":
+                device_map = "cpu"
+                torch_dtype = torch.float32  # Use float32 for CPU
+            else:
+                device_map = self.device if ':' in self.device else 'cuda'
+                torch_dtype = torch.bfloat16
+            
+            # Load model with correct parameters
+            attn_implementation = "flash_attention_2" if self.device != "cpu" else "eager"
+            
             self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                 self.model_path,
-                torch_dtype=torch.bfloat16,
-                device_map='cuda',
+                torch_dtype=torch_dtype,
+                device_map=device_map,
                 attn_implementation=attn_implementation
             )
             
@@ -63,6 +98,11 @@ class PodcastAudioGenerator:
                 logger.info(f"Language model attention: {self.model.model.language_model.config._attn_implementation}")
             
             logger.info("Model loaded successfully")
+            
+            # Clear cache after loading
+            if self.device != "cpu":
+                torch.cuda.empty_cache()
+                
         except Exception as e:
             logger.error(f"Error loading model: {e}")
             raise
@@ -186,6 +226,12 @@ class PodcastAudioGenerator:
                 return_attention_mask=True,
             )
             
+            # Move inputs to correct device
+            if self.device != "cpu":
+                for key in inputs:
+                    if hasattr(inputs[key], 'to'):
+                        inputs[key] = inputs[key].to(self.device)
+            
             # Generate audio with correct parameters
             with torch.no_grad():
                 outputs = self.model.generate(
@@ -199,13 +245,25 @@ class PodcastAudioGenerator:
             
             # Extract audio from outputs.speech_outputs[0]
             if outputs.speech_outputs and outputs.speech_outputs[0] is not None:
-                return outputs.speech_outputs[0]
+                audio_output = outputs.speech_outputs[0]
+                # Move to CPU to save GPU memory
+                if hasattr(audio_output, 'cpu'):
+                    audio_output = audio_output.cpu()
+                
+                # Clear GPU cache after each generation
+                if self.device != "cpu":
+                    torch.cuda.empty_cache()
+                
+                return audio_output
             else:
                 logger.error("No audio output generated")
                 return None
             
         except Exception as e:
             logger.error(f"Error generating audio for text '{formatted_text[:50]}...': {e}")
+            # Clear cache on error as well
+            if self.device != "cpu":
+                torch.cuda.empty_cache()
             return None
     
     def concatenate_audio_segments(self, audio_segments: List[torch.Tensor]) -> torch.Tensor:
@@ -344,10 +402,52 @@ class PodcastAudioGenerator:
                 preferences[speaker] = available_voices[idx]
         
         return preferences
+    
+    def get_memory_usage(self) -> Dict[str, float]:
+        """Get current GPU memory usage information"""
+        if self.device == "cpu":
+            return {"device": "cpu", "memory_info": "CPU mode - no GPU memory tracking"}
+        
+        try:
+            gpu_id = 0 if ':' not in self.device else int(self.device.split(':')[1])
+            memory_allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
+            memory_reserved = torch.cuda.memory_reserved(gpu_id) / 1024**3
+            memory_total = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+            memory_free = memory_total - memory_reserved
+            
+            return {
+                "device": self.device,
+                "allocated_gb": round(memory_allocated, 2),
+                "reserved_gb": round(memory_reserved, 2),
+                "total_gb": round(memory_total, 2),
+                "free_gb": round(memory_free, 2),
+                "utilization_percent": round((memory_reserved / memory_total) * 100, 1)
+            }
+        except Exception as e:
+            logger.error(f"Error getting memory usage: {e}")
+            return {"error": str(e)}
+    
+    def clear_memory_cache(self):
+        """Clear GPU memory cache"""
+        if self.device != "cpu":
+            torch.cuda.empty_cache()
+            logger.info("GPU memory cache cleared")
 
 if __name__ == "__main__":
-    # Test the audio generator
-    generator = PodcastAudioGenerator()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Test PodcastAudioGenerator")
+    parser.add_argument("--device", default="cuda", help="Device to use (cuda, cuda:0, cuda:1, cpu)")
+    parser.add_argument("--model", default="microsoft/VibeVoice-1.5B", help="Model path")
+    args = parser.parse_args()
+    
+    # Test the audio generator with specified device
+    print(f"Initializing PodcastAudioGenerator with device: {args.device}")
+    generator = PodcastAudioGenerator(model_path=args.model, device=args.device)
+    
+    # Show memory usage
+    memory_info = generator.get_memory_usage()
+    print(f"Memory usage: {memory_info}")
     
     # Test with sample dialogue
     sample_dialogue = """Speaker 1: Welcome to today's hot news podcast! We have some fascinating developments to discuss.
@@ -364,5 +464,8 @@ Speaker 1: Great insights! Thanks for joining us today."""
     
     if success:
         print(f"Test podcast generated successfully: {output_file}")
+        # Show final memory usage
+        final_memory = generator.get_memory_usage()
+        print(f"Final memory usage: {final_memory}")
     else:
         print("Failed to generate test podcast")

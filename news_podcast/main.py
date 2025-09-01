@@ -26,11 +26,13 @@ class NewsPodcastGenerator:
         self,
         model_path: str = "microsoft/VibeVoice-1.5B",
         ollama_url: str = "http://172.36.237.245:11434",
-        ollama_model: str = "qwen2.5-coder:1.5b"
+        ollama_model: str = "qwen2.5-coder:1.5b",
+        device: str = "cuda"
     ):
         self.model_path = model_path
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
+        self.device = device
         
         # Initialize components
         self.news_fetcher = NewsFetcher()
@@ -58,8 +60,8 @@ class NewsPodcastGenerator:
     def _initialize_audio_generator(self):
         """Initialize audio generator only when needed"""
         if self.audio_generator is None:
-            logger.info("Initializing VibeVoice model...")
-            self.audio_generator = PodcastAudioGenerator(self.model_path)
+            logger.info(f"Initializing VibeVoice model on device: {self.device}...")
+            self.audio_generator = PodcastAudioGenerator(self.model_path, device=self.device)
     
     def fetch_news(self, news_limit: int = 15) -> list:
         """Fetch today's hot news"""
@@ -384,6 +386,11 @@ def main():
         action="store_true",
         help="List available voices and exit"
     )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="Device to use for model inference (default: cuda). Examples: cuda, cuda:0, cuda:1, cpu"
+    )
     
     args = parser.parse_args()
     
@@ -392,7 +399,8 @@ def main():
         generator = NewsPodcastGenerator(
             args.model_path,
             args.ollama_url, 
-            args.ollama_model
+            args.ollama_model,
+            args.device
         )
         
         # List voices if requested
