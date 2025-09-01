@@ -27,15 +27,17 @@ class NewsPodcastGenerator:
         model_path: str = "microsoft/VibeVoice-1.5B",
         ollama_url: str = "http://172.36.237.245:11434",
         ollama_model: str = "qwen2.5-coder:1.5b",
-        device: str = "cuda"
+        device: str = "cuda",
+        hours_filter: int = 24
     ):
         self.model_path = model_path
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
         self.device = device
+        self.hours_filter = hours_filter
         
         # Initialize components
-        self.news_fetcher = NewsFetcher()
+        self.news_fetcher = NewsFetcher(hours_filter=hours_filter)
         self.ollama_processor = OllamaProcessor(ollama_url, ollama_model)
         self.audio_generator = None  # Initialize lazily to avoid loading model unless needed
         
@@ -391,6 +393,12 @@ def main():
         default="cuda",
         help="Device to use for model inference (default: cuda). Examples: cuda, cuda:0, cuda:1, cpu"
     )
+    parser.add_argument(
+        "--hours-filter",
+        type=int,
+        default=24,
+        help="Filter news within the last N hours (default: 24)"
+    )
     
     args = parser.parse_args()
     
@@ -400,7 +408,8 @@ def main():
             args.model_path,
             args.ollama_url, 
             args.ollama_model,
-            args.device
+            args.device,
+            getattr(args, 'hours_filter', 24)
         )
         
         # List voices if requested
