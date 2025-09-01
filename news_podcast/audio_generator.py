@@ -78,13 +78,9 @@ class PodcastAudioGenerator:
                 device_map = "cpu"
                 torch_dtype = torch.float32  # Use float32 for CPU
             else:
-                # For specific GPU devices like cuda:2, use device_map="auto" and manually move
-                if ':' in self.device:
-                    device_map = "auto"  # Let transformers handle device mapping
-                    target_device = self.device
-                else:
-                    device_map = 'cuda'
-                    target_device = 'cuda'
+                # For GPU devices, avoid device_map="auto" to prevent parameter allocation issues
+                # Instead, load on CPU first and then move to target device
+                device_map = None  # Load on CPU first
                 torch_dtype = torch.bfloat16
             
             # Load model with correct parameters
@@ -92,21 +88,25 @@ class PodcastAudioGenerator:
             
             logger.info(f"Using device_map: {device_map}, target_device: {self.device}")
             
-            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                self.model_path,
-                torch_dtype=torch_dtype,
-                device_map=device_map,
-                attn_implementation=attn_implementation
-            )
-            
-            # For specific GPU devices, manually move the model to the target device
-            if self.device != "cpu" and ':' in self.device:
-                logger.info(f"Manually moving model to {self.device}")
-                try:
-                    self.model = self.model.to(self.device)
-                except Exception as e:
-                    logger.warning(f"Failed to move model to {self.device}: {e}")
-                    logger.info("Model will use default device mapping")
+            # Load model with device_map parameter
+            if device_map is not None:
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch_dtype,
+                    device_map=device_map,
+                    attn_implementation=attn_implementation
+                )
+            else:
+                # Load on CPU first, then move to target device
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch_dtype,
+                    attn_implementation=attn_implementation
+                )
+                
+                # Move entire model to target device
+                logger.info(f"Moving model to {self.device}")
+                self.model = self.model.to(self.device)
             
             self.model.eval()
             self.model.set_ddpm_inference_steps(num_steps=10)
