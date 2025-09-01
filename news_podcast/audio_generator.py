@@ -1,95 +1,123 @@
 import os
 import re
 from typing import List, Dict, Any, Optional, Tuple
-import logging
 import torch
 from pathlib import Path
 
 from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
-
-logger = logging.getLogger(__name__)
+from .logger import NewsLogger
 
 class PodcastAudioGenerator:
     """Generates multi-speaker podcast audio using VibeVoice"""
     
-    def __init__(self, model_path: str = "microsoft/VibeVoice-1.5B", device: str = "cuda"):
+    def __init__(self, model_path: str = "microsoft/VibeVoice-1.5B", device: str = "cuda", debug: bool = False):
+        # Initialize logger
+        self.logger = NewsLogger.get_logger(self.__class__.__name__, debug=debug)
+        
         self.model_path = model_path
         self.device = device
         self.model = None
         self.processor = None
         self.voice_presets = {}
-        self._setup_voice_presets()
-        self._validate_device()
-        self._load_model()
+        
+        self.logger.info(f"Initializing PodcastAudioGenerator with model: {model_path}, device: {device}")
+        
+        try:
+            self._setup_voice_presets()
+            self._validate_device()
+            self._load_model()
+            self.logger.info("PodcastAudioGenerator initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize PodcastAudioGenerator: {e}")
+            raise
     
     def _setup_voice_presets(self):
         """Setup voice presets by scanning the voices directory"""
+        self.logger.debug("Setting up voice presets...")
         voices_dir = Path(__file__).parent.parent / "demo" / "voices"
         
+        self.logger.debug(f"Scanning voices directory: {voices_dir}")
         if not voices_dir.exists():
-            logger.warning(f"Voices directory not found at {voices_dir}")
+            self.logger.warning(f"Voices directory not found at {voices_dir}")
             return
         
         # Scan for English voice files
+        voice_count = 0
         for wav_file in voices_dir.glob("*.wav"):
             if wav_file.name.startswith("en-"):
                 # Extract speaker name from filename
                 # Format: en-{Name}_{gender}.wav
                 name_part = wav_file.stem.replace("en-", "").split("_")[0]
                 self.voice_presets[name_part] = str(wav_file)
+                voice_count += 1
+                self.logger.debug(f"Found voice: {name_part} -> {wav_file.name}")
         
-        logger.info(f"Available voices: {list(self.voice_presets.keys())}")
+        self.logger.info(f"Loaded {voice_count} voice presets: {list(self.voice_presets.keys())}")
+        if not self.voice_presets:
+            self.logger.warning("No English voice files found in voices directory")
     
     def _validate_device(self):
         """Validate and setup GPU device"""
+        self.logger.debug(f"Validating device: {self.device}")
+        
         if self.device.startswith('cuda'):
             if not torch.cuda.is_available():
-                logger.warning("CUDA not available, falling back to CPU")
+                self.logger.warning("CUDA not available, falling back to CPU")
                 self.device = "cpu"
             else:
+                self.logger.debug(f"CUDA is available with {torch.cuda.device_count()} devices")
+                
                 # Check if specific GPU index is specified
                 if ':' in self.device:
                     gpu_id = int(self.device.split(':')[1])
                     if gpu_id >= torch.cuda.device_count():
-                        logger.warning(f"GPU {gpu_id} not available, using GPU 0")
+                        self.logger.warning(f"GPU {gpu_id} not available, using GPU 0")
                         self.device = "cuda:0"
                 
                 # Log GPU memory info
                 if self.device != "cpu":
-                    gpu_id = 0 if ':' not in self.device else int(self.device.split(':')[1])
-                    memory_allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
-                    memory_reserved = torch.cuda.memory_reserved(gpu_id) / 1024**3
-                    memory_total = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
-                    logger.info(f"GPU {gpu_id} memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved, {memory_total:.2f}GB total")
+                    try:
+                        gpu_id = 0 if ':' not in self.device else int(self.device.split(':')[1])
+                        memory_allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
+                        memory_reserved = torch.cuda.memory_reserved(gpu_id) / 1024**3
+                        memory_total = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+                        self.logger.info(f"GPU {gpu_id} memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved, {memory_total:.2f}GB total")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to get GPU memory info: {e}")
         
-        logger.info(f"Using device: {self.device}")
+        self.logger.info(f"Using device: {self.device}")
     
     def _load_model(self):
         """Load VibeVoice model and processor"""
         try:
-            logger.info(f"Loading VibeVoice model: {self.model_path} on device: {self.device}")
+            self.logger.info(f"Loading VibeVoice model: {self.model_path} on device: {self.device}")
             
             # Load processor
+            self.logger.debug("Loading VibeVoice processor...")
             self.processor = VibeVoiceProcessor.from_pretrained(self.model_path)
+            self.logger.debug("Processor loaded successfully")
             
             # Determine device_map based on device setting
             if self.device == "cpu":
                 device_map = "cpu"
                 torch_dtype = torch.float32  # Use float32 for CPU
+                self.logger.debug("Using CPU mode with float32 precision")
             else:
                 # For GPU devices, avoid device_map="auto" to prevent parameter allocation issues
                 # Instead, load on CPU first and then move to target device
                 device_map = None  # Load on CPU first
                 torch_dtype = torch.bfloat16
+                self.logger.debug("Using GPU mode with bfloat16 precision")
             
             # Load model with correct parameters
             attn_implementation = "flash_attention_2" if self.device != "cpu" else "eager"
             
-            logger.info(f"Using device_map: {device_map}, target_device: {self.device}")
+            self.logger.info(f"Using device_map: {device_map}, target_device: {self.device}, attention: {attn_implementation}")
             
             # Load model with device_map parameter
             if device_map is not None:
+                self.logger.debug("Loading model directly to target device...")
                 self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                     self.model_path,
                     torch_dtype=torch_dtype,
@@ -98,6 +126,7 @@ class PodcastAudioGenerator:
                 )
             else:
                 # Load on CPU first, then move to target device
+                self.logger.debug("Loading model on CPU first, then moving to target device...")
                 self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
                     self.model_path,
                     torch_dtype=torch_dtype,
@@ -105,55 +134,57 @@ class PodcastAudioGenerator:
                 )
                 
                 # Move entire model to target device
-                logger.info(f"Moving model to {self.device}")
+                self.logger.info(f"Moving model to {self.device}")
                 self.model = self.model.to(self.device)
             
             self.model.eval()
             self.model.set_ddpm_inference_steps(num_steps=10)
+            self.logger.debug("Model set to evaluation mode with 10 DDPM inference steps")
             
             # Verify actual device placement
             if hasattr(self.model, 'device'):
-                logger.info(f"Model device after loading: {self.model.device}")
+                self.logger.debug(f"Model device after loading: {self.model.device}")
             elif hasattr(self.model, 'hf_device_map'):
-                logger.info(f"Model device map: {self.model.hf_device_map}")
+                self.logger.debug(f"Model device map: {self.model.hf_device_map}")
             
             # Check individual component devices
             if hasattr(self.model, 'model'):
                 if hasattr(self.model.model, 'device'):
-                    logger.info(f"Inner model device: {self.model.model.device}")
+                    self.logger.debug(f"Inner model device: {self.model.model.device}")
                 if hasattr(self.model.model, 'language_model') and hasattr(self.model.model.language_model, 'device'):
-                    logger.info(f"Language model device: {self.model.model.language_model.device}")
+                    self.logger.debug(f"Language model device: {self.model.model.language_model.device}")
             
             if hasattr(self.model.model, 'language_model'):
-                logger.info(f"Language model attention: {self.model.model.language_model.config._attn_implementation}")
+                self.logger.debug(f"Language model attention: {self.model.model.language_model.config._attn_implementation}")
             
-            logger.info("Model loaded successfully")
+            self.logger.info("Model loaded successfully")
             
             # Clear cache after loading
             if self.device != "cpu":
                 torch.cuda.empty_cache()
+                self.logger.debug("GPU memory cache cleared after model loading")
                 
         except Exception as e:
-            logger.error(f"Error loading model: {e}")
+            self.logger.error(f"Error loading model: {e}")
             raise
     
     def parse_dialogue(self, dialogue_text: str) -> List[Tuple[str, str]]:
         """Parse dialogue text into (speaker, text) pairs"""
         # Debug logging to see what dialogue_text is being received
-        logger.info(f"Parsing dialogue text (length: {len(dialogue_text)})")
-        logger.info(f"First 500 characters: {dialogue_text[:500]}")
+        self.logger.info(f"Parsing dialogue text (length: {len(dialogue_text)})")
+        self.logger.info(f"First 500 characters: {dialogue_text[:500]}")
         
         lines = dialogue_text.strip().split('\n')
         parsed_dialogue = []
         
-        logger.info(f"Split into {len(lines)} lines")
+        self.logger.info(f"Split into {len(lines)} lines")
         
         for i, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
             
-            logger.debug(f"Processing line {i+1}: '{line}'")
+            self.logger.debug(f"Processing line {i+1}: '{line}'")
             
             # Look for various dialogue formats
             if ':' in line:
@@ -166,18 +197,18 @@ class PodcastAudioGenerator:
                     # Handle formats like "**Speaker 1:**" or "**Speaker 2:**"
                     if speaker.startswith('**'):
                         speaker = speaker[2:].strip()  # Remove ** prefix
-                        logger.debug(f"Cleaned speaker name from asterisk prefix: '{speaker}'")
+                        self.logger.debug(f"Cleaned speaker name from asterisk prefix: '{speaker}'")
                     elif speaker.startswith('*'):
                         speaker = speaker[1:].strip()  # Remove * prefix
-                        logger.debug(f"Cleaned speaker name from asterisk prefix: '{speaker}'")
+                        self.logger.debug(f"Cleaned speaker name from asterisk prefix: '{speaker}'")
                     
                     # Clean up text - remove asterisk prefixes from text as well
                     if text.startswith('**'):
                         text = text[2:].strip()  # Remove ** prefix from text
-                        logger.debug(f"Cleaned text from asterisk prefix")
+                        self.logger.debug(f"Cleaned text from asterisk prefix")
                     elif text.startswith('*'):
                         text = text[1:].strip()  # Remove * prefix from text
-                        logger.debug(f"Cleaned text from asterisk prefix")
+                        self.logger.debug(f"Cleaned text from asterisk prefix")
                     
                     # Accept various speaker formats:
                     # - "Speaker 1", "Speaker 2", etc. (VibeVoice format)
@@ -200,13 +231,13 @@ class PodcastAudioGenerator:
                             normalized_speaker = speaker_mapping.get(speaker, speaker)
                         
                         parsed_dialogue.append((normalized_speaker, text))
-                        logger.debug(f"Added dialogue pair: {normalized_speaker} -> {text[:50]}...")
+                        self.logger.debug(f"Added dialogue pair: {normalized_speaker} -> {text[:50]}...")
                     else:
-                        logger.debug(f"Skipped line with empty speaker or text: '{line}'")
+                        self.logger.debug(f"Skipped line with empty speaker or text: '{line}'")
             else:
-                logger.debug(f"Line has no colon, skipping: '{line}'")
+                self.logger.debug(f"Line has no colon, skipping: '{line}'")
         
-        logger.info(f"Parsed {len(parsed_dialogue)} dialogue pairs")
+        self.logger.info(f"Parsed {len(parsed_dialogue)} dialogue pairs")
         return parsed_dialogue
     
     def assign_voices_to_speakers(self, speakers: List[str], voice_preferences: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -215,7 +246,7 @@ class PodcastAudioGenerator:
         available_voices = list(self.voice_presets.keys())
         
         if not available_voices:
-            logger.warning("No English voices available")
+            self.logger.warning("No English voices available")
             return voice_assignment
         
         # Use preferences if provided
@@ -238,7 +269,7 @@ class PodcastAudioGenerator:
                         len(voice_assignment) % len(self.voice_presets)
                     ]
         
-        logger.info(f"Voice assignments: {voice_assignment}")
+        self.logger.info(f"Voice assignments: {voice_assignment}")
         return voice_assignment
     
     def generate_audio_segment(self, speaker: str, text: str, voice_path: str) -> torch.Tensor:
@@ -286,11 +317,11 @@ class PodcastAudioGenerator:
                 
                 return audio_output
             else:
-                logger.error("No audio output generated")
+                self.logger.error("No audio output generated")
                 return None
             
         except Exception as e:
-            logger.error(f"Error generating audio for text '{formatted_text[:50]}...': {e}")
+            self.logger.error(f"Error generating audio for text '{formatted_text[:50]}...': {e}")
             # Clear cache on error as well
             if self.device != "cpu":
                 torch.cuda.empty_cache()
@@ -299,32 +330,44 @@ class PodcastAudioGenerator:
     def concatenate_audio_segments(self, audio_segments: List[torch.Tensor]) -> torch.Tensor:
         """Concatenate multiple audio segments with brief pauses"""
         if not audio_segments:
+            self.logger.warning("No audio segments to concatenate")
             return torch.tensor([])
         
         # Filter out None segments
         valid_segments = [seg for seg in audio_segments if seg is not None]
         
         if not valid_segments:
+            self.logger.warning("No valid audio segments to concatenate")
             return torch.tensor([])
+        
+        self.logger.info(f"Concatenating {len(valid_segments)} audio segments")
         
         # Add brief silence between segments (0.5 seconds at 24kHz)
         sample_rate = 24000
         silence_duration = int(0.5 * sample_rate)
         silence = torch.zeros(silence_duration, dtype=valid_segments[0].dtype, device=valid_segments[0].device)
         
+        self.logger.debug(f"Adding 0.5s silence ({silence_duration} samples) between segments")
+        
         concatenated_segments = []
+        total_samples = 0
         for i, segment in enumerate(valid_segments):
             # Ensure segment is properly shaped
             if segment.dim() > 1:
                 segment = segment.squeeze()
             
             concatenated_segments.append(segment)
+            total_samples += len(segment)
             
             # Add silence between segments (except after the last one)
             if i < len(valid_segments) - 1:
                 concatenated_segments.append(silence)
+                total_samples += silence_duration
         
-        return torch.cat(concatenated_segments, dim=0)
+        final_audio = torch.cat(concatenated_segments, dim=0)
+        self.logger.info(f"Audio concatenation complete: {total_samples} total samples ({total_samples/sample_rate:.2f}s)")
+        
+        return final_audio
     
     def generate_podcast_audio(
         self, 
@@ -335,67 +378,78 @@ class PodcastAudioGenerator:
         """Generate complete podcast audio from dialogue text"""
         
         if not self.model or not self.processor:
-            logger.error("Model not loaded")
+            self.logger.error("Model not loaded")
             return False
         
         try:
             # Parse the dialogue
             dialogue_pairs = self.parse_dialogue(dialogue_text)
             if not dialogue_pairs:
-                logger.error("No valid dialogue found")
+                self.logger.error("No valid dialogue found")
                 return False
             
             # Get unique speakers
             speakers = list(set(pair[0] for pair in dialogue_pairs))
-            logger.info(f"Found speakers: {speakers}")
+            self.logger.info(f"Found speakers: {speakers}")
             
             # Assign voices to speakers
             voice_assignment = self.assign_voices_to_speakers(speakers, voice_preferences)
             
             if not voice_assignment:
-                logger.error("No voice assignments made")
+                self.logger.error("No voice assignments made")
                 return False
             
             # Generate audio for each dialogue segment
             audio_segments = []
-            logger.info(f"Generating audio for {len(dialogue_pairs)} segments")
+            self.logger.info(f"Generating audio for {len(dialogue_pairs)} segments")
             
             for i, (speaker, text) in enumerate(dialogue_pairs):
-                logger.info(f"Generating segment {i+1}/{len(dialogue_pairs)}: {speaker}")
+                self.logger.info(f"Generating segment {i+1}/{len(dialogue_pairs)}: {speaker}")
                 
                 voice_path = voice_assignment.get(speaker)
                 if not voice_path:
-                    logger.warning(f"No voice assigned to speaker: {speaker}")
+                    self.logger.warning(f"No voice assigned to speaker: {speaker}")
                     continue
                 
                 audio_segment = self.generate_audio_segment(speaker, text, voice_path)
                 if audio_segment is not None:
                     audio_segments.append(audio_segment)
                 else:
-                    logger.warning(f"Failed to generate audio for segment {i+1}")
+                    self.logger.warning(f"Failed to generate audio for segment {i+1}")
             
             if not audio_segments:
-                logger.error("No audio segments generated")
+                self.logger.error("No audio segments generated")
                 return False
             
             # Concatenate all segments
-            logger.info("Concatenating audio segments")
+            self.logger.info("Concatenating audio segments")
             final_audio = self.concatenate_audio_segments(audio_segments)
             
             # Save the audio
             self.save_audio(final_audio, output_path)
-            logger.info(f"Podcast audio saved to: {output_path}")
+            self.logger.info(f"Podcast audio saved to: {output_path}")
             return True
             
         except Exception as e:
-            logger.error(f"Error generating podcast audio: {e}")
+            self.logger.error(f"Error generating podcast audio: {e}")
             return False
     
     def save_audio(self, audio_tensor: torch.Tensor, output_path: str, sample_rate: int = 24000):
         """Save audio tensor to file using processor.save_audio"""
         try:
+            self.logger.info(f"Saving audio to: {output_path}")
+            
             # Create output directory if it doesn't exist
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                self.logger.debug(f"Created output directory: {output_dir}")
+            
+            # Log audio properties
+            if hasattr(audio_tensor, 'shape'):
+                self.logger.debug(f"Audio tensor shape: {audio_tensor.shape}")
+            else:
+                self.logger.debug(f"Audio tensor length: {len(audio_tensor)}")
             
             # Use processor.save_audio method (same as inference_from_file.py)
             self.processor.save_audio(
@@ -403,8 +457,17 @@ class PodcastAudioGenerator:
                 output_path=output_path,
             )
             
+            # Verify file was created
+            if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                duration = len(audio_tensor) / sample_rate
+                self.logger.info(f"Audio saved successfully: {file_size} bytes, {duration:.2f}s duration")
+            else:
+                self.logger.error(f"Audio file was not created: {output_path}")
+            
         except Exception as e:
-            logger.error(f"Error saving audio: {e}")
+            self.logger.error(f"Error saving audio: {e}")
+            raise
     
     def get_available_voices(self) -> Dict[str, str]:
         """Get available voice presets"""
@@ -454,14 +517,14 @@ class PodcastAudioGenerator:
                 "utilization_percent": round((memory_reserved / memory_total) * 100, 1)
             }
         except Exception as e:
-            logger.error(f"Error getting memory usage: {e}")
+            self.logger.error(f"Error getting memory usage: {e}")
             return {"error": str(e)}
     
     def clear_memory_cache(self):
         """Clear GPU memory cache"""
         if self.device != "cpu":
             torch.cuda.empty_cache()
-            logger.info("GPU memory cache cleared")
+            self.logger.info("GPU memory cache cleared")
 
 if __name__ == "__main__":
     import argparse

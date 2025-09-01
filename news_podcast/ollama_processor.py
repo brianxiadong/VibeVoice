@@ -1,20 +1,36 @@
 import requests
 import json
 from typing import List, Dict, Any, Optional
-import logging
-
-logger = logging.getLogger(__name__)
+from .logger import NewsLogger
 
 class OllamaProcessor:
     """Processes news content using local Ollama LLM"""
     
-    def __init__(self, base_url: str = "http://172.36.237.245:11434", model: str = "qwen2.5-coder:1.5b"):
+    def __init__(self, base_url: str = "http://172.36.237.245:11434", model: str = "qwen2.5-coder:1.5b", debug: bool = False):
+        self.logger = NewsLogger(debug=debug).get_logger()
         self.base_url = base_url.rstrip('/')
         self.model = model
         self.session = requests.Session()
+        
+        self.logger.info(f"Initializing OllamaProcessor with base_url={base_url}, model={model}")
+        
+        # Test connection on initialization
+        if self.check_ollama_connection():
+            self.logger.info("Successfully connected to Ollama service")
+            available_models = self.list_available_models()
+            if self.model in [m.split(':')[0] + ':' + m.split(':')[1] if ':' in m else m for m in available_models]:
+                self.logger.info(f"Model '{self.model}' is available")
+            else:
+                self.logger.warning(f"Model '{self.model}' not found in available models: {available_models}")
+        else:
+            self.logger.error(f"Failed to connect to Ollama service at {base_url}")
+            self.logger.error("Please ensure Ollama is running and accessible")
     
     def _call_ollama(self, prompt: str, system_prompt: str = "") -> Optional[str]:
         """Make a call to Ollama API"""
+        prompt_preview = prompt[:100] + '...' if len(prompt) > 100 else prompt
+        self.logger.debug(f"Calling Ollama API with prompt: {prompt_preview}")
+        
         try:
             payload = {
                 "model": self.model,
@@ -23,6 +39,7 @@ class OllamaProcessor:
                 "stream": False
             }
             
+            self.logger.debug(f"Sending request to {self.base_url}/api/generate with model {self.model}")
             response = self.session.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
@@ -31,16 +48,34 @@ class OllamaProcessor:
             response.raise_for_status()
             
             result = response.json()
-            return result.get('response', '').strip()
+            response_text = result.get('response', '').strip()
             
+            if response_text:
+                response_preview = response_text[:100] + '...' if len(response_text) > 100 else response_text
+                self.logger.debug(f"Received response: {response_preview}")
+                self.logger.info(f"Successfully generated {len(response_text)} characters of content")
+            else:
+                self.logger.warning("Received empty response from Ollama")
+            
+            return response_text
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Network error calling Ollama API: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse Ollama response JSON: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Error calling Ollama: {e}")
+            self.logger.error(f"Unexpected error calling Ollama: {e}", exc_info=True)
             return None
     
     def summarize_news(self, news_items: List[Dict[str, Any]], max_items: int = 10) -> str:
         """Summarize news items into a coherent summary"""
+        self.logger.info(f"Summarizing {len(news_items)} news items (max: {max_items})")
+        
         # Select top news items
         selected_news = news_items[:max_items]
+        self.logger.debug(f"Selected {len(selected_news)} news items for summarization")
         
         # Prepare news content for summarization
         news_content = []
@@ -54,7 +89,8 @@ class OllamaProcessor:
                 news_entry += f"\\n   Summary: {text[:200]}..."
             news_content.append(news_entry)
         
-        news_text = "\\n\\n".join(news_content)
+        news_text = "\n\n".join(news_content)
+        self.logger.debug(f"Prepared news content for summarization: {len(news_text)} characters")
         
         system_prompt = """You are a professional news analyst and podcast content creator. Your task is to analyze today's hot news and create a comprehensive summary that will be used for podcast generation."""
         
@@ -70,10 +106,20 @@ Please provide:
 
 Keep the summary informative, engaging, and suitable for audio content. Focus on the most important and interesting aspects."""
 
-        return self._call_ollama(prompt, system_prompt) or "Unable to generate summary."
+        self.logger.info("Generating news summary using Ollama...")
+        summary = self._call_ollama(prompt, system_prompt)
+        
+        if summary:
+            self.logger.info(f"Successfully generated news summary ({len(summary)} characters)")
+            return summary
+        else:
+            self.logger.error("Failed to generate news summary, using fallback")
+            return "Unable to generate summary."
     
     def create_podcast_dialogue(self, news_summary: str, num_speakers: int = 2) -> str:
         """Convert news summary into a multi-speaker podcast dialogue"""
+        self.logger.info(f"Creating podcast dialogue with {num_speakers} speakers")
+        self.logger.debug(f"Input summary length: {len(news_summary)} characters")
         
         system_prompt = f"""You are a professional podcast script writer. Create an engaging, natural conversation between {num_speakers} speakers discussing today's hot news.
 
@@ -109,14 +155,20 @@ Create a natural conversation where the speakers discuss these topics, share ins
 
 REMEMBER: Use "Speaker 1:", "Speaker 2:", etc. format ONLY. Make it sound like real people talking naturally."""
 
+        self.logger.info("Generating podcast dialogue using Ollama...")
         dialogue = self._call_ollama(prompt, system_prompt)
         
         if not dialogue:
             # Fallback dialogue if API fails
+            self.logger.warning("Ollama dialogue generation failed, using fallback dialogue")
             dialogue = self._create_fallback_dialogue(news_summary, num_speakers)
+        else:
+            self.logger.info(f"Successfully generated dialogue ({len(dialogue)} characters)")
         
         # Post-process to fix format issues
+        self.logger.debug("Post-processing dialogue format...")
         dialogue = self._fix_dialogue_format(dialogue)
+        self.logger.debug(f"Final dialogue length: {len(dialogue)} characters")
         
         return dialogue
     
@@ -199,6 +251,8 @@ Speaker 2: Thanks for joining us today, everyone. We'll be back tomorrow with mo
     
     def enhance_for_audio(self, dialogue: str) -> str:
         """Enhance dialogue for better audio generation"""
+        self.logger.info("Enhancing dialogue for audio generation...")
+        self.logger.debug(f"Input dialogue length: {len(dialogue)} characters")
         
         system_prompt = """You are an audio content specialist. Enhance the given dialogue to make it more suitable for text-to-speech generation by adding natural pauses, emphasis markers, and improving flow.
 
@@ -220,10 +274,18 @@ Improvements to make:
 Enhanced dialogue:"""
 
         enhanced = self._call_ollama(prompt, system_prompt)
-        return enhanced or dialogue
+        
+        if enhanced:
+            self.logger.info(f"Successfully enhanced dialogue ({len(enhanced)} characters)")
+            return enhanced
+        else:
+            self.logger.warning("Failed to enhance dialogue, returning original")
+            return dialogue
     
     def translate_to_chinese(self, english_dialogue: str) -> str:
         """Translate English dialogue to Chinese"""
+        self.logger.info("Translating English dialogue to Chinese...")
+        self.logger.debug(f"Input dialogue length: {len(english_dialogue)} characters")
         
         system_prompt = """你是一个专业的翻译专家，专门负责将英文播客对话翻译成中文。请保持对话的自然性和流畅性，同时保持原有的格式。
 
@@ -248,11 +310,14 @@ Enhanced dialogue:"""
         
         chinese_dialogue = self._call_ollama(prompt, system_prompt)
         
-        if not chinese_dialogue:
+        if chinese_dialogue:
+            self.logger.info(f"Successfully translated dialogue to Chinese ({len(chinese_dialogue)} characters)")
+            return chinese_dialogue
+        else:
             # 如果翻译失败，返回一个简单的中文对话
+            self.logger.warning("Translation failed, using fallback Chinese dialogue")
             chinese_dialogue = self._create_fallback_chinese_dialogue()
-        
-        return chinese_dialogue
+            return chinese_dialogue
     
     def _create_fallback_chinese_dialogue(self) -> str:
         """Create a simple fallback Chinese dialogue if translation fails"""
@@ -275,20 +340,37 @@ Speaker 2: 感谢大家今天的收听！我们明天会带来更多热点新闻
     def check_ollama_connection(self) -> bool:
         """Check if Ollama is accessible"""
         try:
+            self.logger.debug(f"Testing connection to Ollama at {self.base_url}")
             response = self.session.get(f"{self.base_url}/api/version", timeout=5)
-            return response.status_code == 200
-        except:
+            if response.status_code == 200:
+                self.logger.debug("Ollama connection test successful")
+                return True
+            else:
+                self.logger.warning(f"Ollama connection test failed with status code: {response.status_code}")
+                return False
+        except requests.RequestException as e:
+            self.logger.debug(f"Ollama connection test failed: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error testing Ollama connection: {e}")
             return False
     
     def list_available_models(self) -> List[str]:
         """List available models in Ollama"""
         try:
+            self.logger.debug("Fetching available models from Ollama...")
             response = self.session.get(f"{self.base_url}/api/tags", timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                return [model.get('name', '') for model in data.get('models', [])]
+                models = [model.get('name', '') for model in data.get('models', [])]
+                self.logger.debug(f"Found {len(models)} available models: {models}")
+                return models
+            else:
+                self.logger.warning(f"Failed to fetch models, status code: {response.status_code}")
+        except requests.RequestException as e:
+            self.logger.error(f"Network error listing models: {e}")
         except Exception as e:
-            logger.error(f"Error listing models: {e}")
+            self.logger.error(f"Unexpected error listing models: {e}")
         return []
 
 if __name__ == "__main__":

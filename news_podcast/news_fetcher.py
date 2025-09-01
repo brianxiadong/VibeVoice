@@ -2,90 +2,147 @@ import requests
 import json
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
-import logging
 import time
 
-logger = logging.getLogger(__name__)
+from .logger import NewsLogger
 
 class NewsFetcher:
     """Fetches hot news from various sources"""
     
-    def __init__(self, hours_filter: int = 24):
+    def __init__(self, hours_filter: int = 24, debug: bool = False):
+        self.logger = NewsLogger(debug=debug).get_logger()
+        
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         self.hours_filter = hours_filter  # Filter news within this many hours
         self.cutoff_timestamp = time.time() - (hours_filter * 3600)
+        
+        self.logger.info(f"NewsFetcher initialized with {hours_filter}h filter, cutoff: {datetime.fromtimestamp(self.cutoff_timestamp)}")
+        
+        # Test network connectivity
+        try:
+            test_response = self.session.get('https://httpbin.org/status/200', timeout=5)
+            self.logger.info("Network connectivity test successful")
+        except Exception as e:
+            self.logger.warning(f"Network connectivity test failed: {e}")
     
     def fetch_hacker_news_top(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Fetch top stories from Hacker News with time filtering"""
+        self.logger.info(f"Fetching top {limit} Hacker News stories...")
         try:
             # Get top story IDs
-            response = self.session.get('https://hacker-news.firebaseio.com/v0/topstories.json')
+            self.logger.debug("Requesting Hacker News top stories list...")
+            response = self.session.get('https://hacker-news.firebaseio.com/v0/topstories.json', timeout=10)
+            response.raise_for_status()
+            
             story_ids = response.json()[:limit * 3]  # Get more to account for filtering
+            self.logger.debug(f"Retrieved {len(story_ids)} story IDs from Hacker News")
             
             stories = []
-            for story_id in story_ids:
+            for i, story_id in enumerate(story_ids, 1):
                 if len(stories) >= limit:
                     break
-                    
-                story_response = self.session.get(f'https://hacker-news.firebaseio.com/v0/item/{story_id}.json')
-                story_data = story_response.json()
                 
-                if story_data and story_data.get('title'):
-                    # Check if story is within time filter
-                    story_time = story_data.get('time', 0)
-                    if story_time >= self.cutoff_timestamp:
-                        stories.append({
-                            'title': story_data.get('title', ''),
-                            'url': story_data.get('url', ''),
-                            'score': story_data.get('score', 0),
-                            'text': story_data.get('text', ''),
-                            'source': 'Hacker News',
-                            'timestamp': story_time,
-                            'published_time': datetime.fromtimestamp(story_time).strftime('%Y-%m-%d %H:%M:%S')
-                        })
+                try:
+                    self.logger.debug(f"Fetching story {i}/{len(story_ids)}: {story_id}")
+                    story_response = self.session.get(f'https://hacker-news.firebaseio.com/v0/item/{story_id}.json', timeout=5)
+                    story_response.raise_for_status()
+                    story_data = story_response.json()
+                    
+                    if story_data and story_data.get('title'):
+                        # Check if story is within time filter
+                        story_time = story_data.get('time', 0)
+                        if story_time >= self.cutoff_timestamp:
+                            story_title = story_data.get('title', '')[:50] + '...' if len(story_data.get('title', '')) > 50 else story_data.get('title', '')
+                            self.logger.debug(f"Adding story: {story_title} (score: {story_data.get('score', 0)})")
+                            stories.append({
+                                'title': story_data.get('title', ''),
+                                'url': story_data.get('url', ''),
+                                'score': story_data.get('score', 0),
+                                'text': story_data.get('text', ''),
+                                'source': 'Hacker News',
+                                'timestamp': story_time,
+                                'published_time': datetime.fromtimestamp(story_time).strftime('%Y-%m-%d %H:%M:%S')
+                            })
+                        else:
+                            self.logger.debug(f"Skipping old story: {story_data.get('title', '')[:30]}...")
+                    else:
+                        self.logger.debug(f"Skipping invalid story data for ID {story_id}")
+                        
+                except requests.RequestException as e:
+                    self.logger.warning(f"Failed to fetch story {story_id}: {e}")
+                    continue
+                except Exception as e:
+                    self.logger.error(f"Unexpected error processing story {story_id}: {e}")
+                    continue
             
-            logger.info(f"Fetched {len(stories)} recent Hacker News stories (within {self.hours_filter} hours)")
+            self.logger.info(f"Fetched {len(stories)} recent Hacker News stories (within {self.hours_filter} hours)")
             return stories
             
+        except requests.RequestException as e:
+            self.logger.error(f"Network error fetching Hacker News: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Error fetching Hacker News: {e}")
+            self.logger.error(f"Unexpected error fetching Hacker News: {e}", exc_info=True)
             return []
     
     def fetch_reddit_hot(self, subreddit: str = 'worldnews', limit: int = 10) -> List[Dict[str, Any]]:
         """Fetch hot posts from Reddit with time filtering"""
+        self.logger.info(f"Fetching top {limit} hot posts from r/{subreddit}...")
         try:
             url = f'https://www.reddit.com/r/{subreddit}/hot.json?limit={limit * 3}'  # Get more to account for filtering
-            response = self.session.get(url)
+            
+            self.logger.debug(f"Requesting Reddit hot posts from: {url}")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
             data = response.json()
             
+            if 'data' not in data or 'children' not in data['data']:
+                self.logger.warning(f"Invalid Reddit API response structure for r/{subreddit}")
+                return []
+            
+            self.logger.debug(f"Retrieved {len(data['data']['children'])} posts from Reddit API")
             stories = []
-            for post in data.get('data', {}).get('children', []):
+            for i, post in enumerate(data['data']['children'], 1):
                 if len(stories) >= limit:
                     break
-                    
-                post_data = post.get('data', {})
-                created_utc = post_data.get('created_utc', 0)
                 
-                # Check if post is within time filter
-                if created_utc >= self.cutoff_timestamp:
-                    stories.append({
-                        'title': post_data.get('title', ''),
-                        'url': post_data.get('url', ''),
-                        'score': post_data.get('score', 0),
-                        'text': post_data.get('selftext', ''),
-                        'source': f'Reddit r/{subreddit}',
-                        'timestamp': created_utc,
-                        'published_time': datetime.fromtimestamp(created_utc).strftime('%Y-%m-%d %H:%M:%S')
-                    })
+                try:
+                    post_data = post.get('data', {})
+                    created_utc = post_data.get('created_utc', 0)
+                    post_title = post_data.get('title', '')[:50] + '...' if len(post_data.get('title', '')) > 50 else post_data.get('title', '')
+                    
+                    self.logger.debug(f"Processing post {i}: {post_title} (score: {post_data.get('score', 0)})")
+                    
+                    # Check if post is within time filter
+                    if created_utc >= self.cutoff_timestamp:
+                        self.logger.debug(f"Adding recent post: {post_title}")
+                        stories.append({
+                            'title': post_data.get('title', ''),
+                            'url': post_data.get('url', ''),
+                            'score': post_data.get('score', 0),
+                            'text': post_data.get('selftext', ''),
+                            'source': f'Reddit r/{subreddit}',
+                            'timestamp': created_utc,
+                            'published_time': datetime.fromtimestamp(created_utc).strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                    else:
+                        self.logger.debug(f"Skipping old post: {post_title}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Error processing Reddit post {i}: {e}")
+                    continue
             
-            logger.info(f"Fetched {len(stories)} recent Reddit r/{subreddit} posts (within {self.hours_filter} hours)")
+            self.logger.info(f"Fetched {len(stories)} recent Reddit r/{subreddit} posts (within {self.hours_filter} hours)")
             return stories
             
+        except requests.RequestException as e:
+            self.logger.error(f"Network error fetching Reddit r/{subreddit}: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Error fetching Reddit: {e}")
+            self.logger.error(f"Unexpected error fetching Reddit r/{subreddit}: {e}", exc_info=True)
             return []
     
 
@@ -132,7 +189,7 @@ class NewsFetcher:
                 unique_news.append(item)
                 seen_titles.add(title_lower)
         
-        logger.info(f"Filtered to {len(unique_news)} unique recent news items (within {self.hours_filter} hours)")
+        self.logger.info(f"Filtered to {len(unique_news)} unique recent news items (within {self.hours_filter} hours)")
         return unique_news
     
     def select_best_news(self, news_items: List[Dict[str, Any]], count: int = 3) -> List[Dict[str, Any]]:
@@ -188,9 +245,9 @@ class NewsFetcher:
         scored_news.sort(key=lambda x: x['composite_score'], reverse=True)
         selected_news = scored_news[:count]
         
-        logger.info(f"Selected {len(selected_news)} best news items from {len(news_items)} candidates")
+        self.logger.info(f"Selected {len(selected_news)} best news items from {len(news_items)} candidates")
         for i, item in enumerate(selected_news, 1):
-            logger.info(f"  {i}. {item['title'][:60]}... (Score: {item['composite_score']:.1f}, {item['hours_old']:.1f}h old)")
+            self.logger.info(f"  {i}. {item['title'][:60]}... (Score: {item['composite_score']:.1f}, {item['hours_old']:.1f}h old)")
         
         return selected_news
     
